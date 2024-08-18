@@ -1,6 +1,8 @@
 streamlit
 google-generativeai
 python-dotenv
+Pillow
+opencv-python
 langchain
 PyPDF2
 chromadb

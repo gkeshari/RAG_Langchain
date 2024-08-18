@@ -77,7 +77,7 @@ def get_text_chunks(text):
 def get_vector_store(text_chunks):
     if not text_chunks:
         logger.warning("No text chunks to process")
-        return
+        return None
     try:
         embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
         vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
@@ -103,33 +103,44 @@ def get_conversational_chain():
 
 def user_input(user_question):
     try:
-        new_db = load_vector_store()
-        if not new_db:
-            return "Vector store not available. Please upload and process documents first."
+        new_db = st.session_state.vector_store
+        if new_db is None:
+            return "No documents have been processed. Please upload and process documents first."
 
-        docs = new_db.similarity_search(user_question)
-        chain = get_conversational_chain()
-        response = chain(
-            {"input_documents": docs, "question": user_question},
-            return_only_outputs=True
-        )
-        return response["output_text"]
+        docs = new_db.similarity_search(user_question, k=4)  # Increase k for more context
+        context = "\n".join([doc.page_content for doc in docs])
+        
+        prompt = f"""
+        Use the following context to answer the question. If the answer is not in the context, say "I don't have enough information to answer this question based on the provided context."
+        
+        Context:
+        {context}
+        
+        Question: {user_question}
+        
+        Answer:
+        """
+        
+        model = ChatGoogleGenerativeAI(model="gemini-pro", temperature=0.3)
+        response = model.invoke(prompt)
+        
+        return response.content
     except Exception as e:
-        logger.error(f"Error processing user input: {str(e)}")
+        logger.error(f"Error in user_input: {str(e)}")
         return "An error occurred while processing your question. Please try again."
 
 def setup_agent():
     search = TavilySearchResults()
     tools = [
         Tool(
-            name="Search",
-            func=search.run,
-            description="useful for when you need to answer questions about current events or the current state of the world"
-        ),
-        Tool(
             name="Document QA System",
             func=user_input,
-            description="useful for when you need to answer questions about the documents that have been uploaded"
+            description="Always use this tool first for answering questions about the uploaded documents."
+        ),
+        Tool(
+            name="Search",
+            func=search.run,
+            description="Use this tool only if the Document QA System couldn't provide an answer."
         )
     ]
     llm = ChatGoogleGenerativeAI(model="gemini-pro", temperature=0)
@@ -201,7 +212,10 @@ def main():
             raw_text = get_text(pdf_docs, other_docs)
             text_chunks = get_text_chunks(raw_text)
             st.session_state.vector_store = get_vector_store(text_chunks)
-            st.sidebar.success("Documents processed successfully!")
+            if st.session_state.vector_store:
+                st.sidebar.success("Documents processed successfully!")
+            else:
+                st.sidebar.error("Failed to process documents. Please try again.")
 
     st.subheader("Ask a Question")
     user_question_input = st.text_input("Your Question", key="user_question_input", placeholder="Enter your question here...")
@@ -212,7 +226,7 @@ def main():
                 if st.session_state.vector_store is None:
                     st.error("Please upload and process documents first.")
                 else:
-                    user_response = process_question(st.session_state.agent, user_question_input)
+                    user_response = user_input(user_question_input)  # Direct call to user_input
                     st.session_state.conversation_history.append({"question": user_question_input, "response": user_response})
 
     st.subheader("Conversation History")

@@ -287,8 +287,44 @@ def process_question(question):
 
 def main():
     st.set_page_config("Chat PDF", layout="wide", page_icon=":robot:")
-    
-    # Add your CSS styling here
+    st.markdown(
+        """
+        <style>
+        .stApp {
+            background-color: #f08080;
+            color: #333333;
+        }
+        .stHeader {
+            background-color: #007bff;
+            color: #ffffff;
+            padding: 10px;
+        }
+        .stSubheader {
+            font-weight: bold;
+            margin-top: 20px;
+            color: #007bff;
+        }
+        .stUserInput {
+            background-color: #e6e6e6;
+            padding: 10px;
+            border-radius: 5px;
+        }
+        .stBotResponse {
+            background-color: #eee8aa; 
+            padding: 10px;
+            border-radius: 5px;
+            color: #155724;
+        }
+        .stClearButton {
+            background-color: #dc3545;
+            color: #ffffff;
+            border-radius: 5px;
+            padding: 5px 10px;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
 
     if 'conversation_history' not in st.session_state:
         st.session_state.conversation_history = []

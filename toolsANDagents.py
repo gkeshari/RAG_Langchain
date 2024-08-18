@@ -1,26 +1,3 @@
-# Key changes and explanations:
-
-# I've added imports for the agent and tools:
-# pythonCopyfrom langchain.agents import initialize_agent, Tool
-# from langchain.agents import AgentType
-# from langchain_community.tools.tavily_search import TavilySearchResults
-
-# I've created a new function setup_agent() that initializes the agent with two tools: 
-#Tavily Search and the Document QA System.
-# The user_input() function now returns the response text directly, without checking for 
-#"Answer is not available in the context".
-# I've added a new function process_question() that uses the agent to process the user's question.
-# In the main() function, I've replaced the direct call to user_input() with process_question().
-# The agent is now stored in the Streamlit session state to avoid reinitializing it on every rerun.
-
-# This modified version uses an agent that can decide whether to use the document QA system or 
-#perform a web search using Tavily, based on the question asked. If the document QA system doesn't 
-#have enough information, the agent can automatically switch to using the Tavily search tool.
-
-# FAISS is a library for efficient similarity search and clustering of dense vectors. It is often used 
-# as a component within vector databases to provide efficient vector search capabilities.
-
-
 import streamlit as st
 from PyPDF2 import PdfReader
 import docx
@@ -33,76 +10,73 @@ from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.chains.question_answering import load_qa_chain
 from langchain.prompts import PromptTemplate
-import pickle
 from langchain.agents import initialize_agent, Tool
 from langchain.agents import AgentType
-# from langchain_community.tools import TavilySearchResults
 from langchain_community.tools.tavily_search import TavilySearchResults
-from langchain_community.vectorstores import FAISS
-import faiss
+import logging
 
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
+# Load environment variables
 load_dotenv()
 os.getenv("GOOGLE_API_KEY")
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-
-# Ensure you have set the TAVILY_API_KEY in your .env file
 tavily_api_key = os.getenv("TAVILY_API_KEY")
 
 def get_text_from_file(file):
-    if file.name.endswith(".pdf"):
-        reader = PdfReader(file)
-        text = ""
-        for page in reader.pages:
-            text += page.extract_text()
+    try:
+        if file.name.endswith(".pdf"):
+            reader = PdfReader(file)
+            text = "".join(page.extract_text() for page in reader.pages)
+        elif file.name.endswith(".docx"):
+            doc = docx.Document(file)
+            text = "\n".join(paragraph.text for paragraph in doc.paragraphs)
+        elif file.name.endswith(".txt"):
+            text = file.getvalue().decode("utf-8")
+        else:
+            return ""
         return text
-    elif file.name.endswith(".docx"):
-        doc = docx.Document(file)
-        full_text = [paragraph.text for paragraph in doc.paragraphs]
-        return "\n".join(full_text)
-    elif file.name.endswith(".txt"):
-        return file.getvalue().decode("utf-8")
-    else:
-        return " NONE "
+    except Exception as e:
+        logger.error(f"Error processing file {file.name}: {str(e)}")
+        return ""
 
 def load_vector_store():
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-    
-    if not os.path.exists("faiss_index.bin") or not os.path.exists("faiss_docs.pkl"):
+    try:
+        embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+        if os.path.exists("faiss_index"):
+            vector_store = FAISS.load_local("faiss_index", embeddings)
+            logger.info("Vector store loaded successfully")
+            return vector_store
+        else:
+            logger.warning("Vector store not found")
+            return None
+    except Exception as e:
+        logger.error(f"Error loading vector store: {str(e)}")
         return None
-
-    index = faiss.read_index("faiss_index.bin")
-    with open("faiss_docs.pkl", "rb") as f:
-        docstore = pickle.load(f)
-    
-    vector_store = FAISS(embeddings.embed_query, index, docstore, {})
-    return vector_store
 
 def get_text(pdf_docs, other_docs):
     text = ""
-    for pdf in pdf_docs:
-        text += get_text_from_file(pdf)
-    for doc in other_docs:
-        text += get_text_from_file(doc)
+    for file in pdf_docs + other_docs:
+        text += get_text_from_file(file)
     return text
 
 def get_text_chunks(text):
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=10000, chunk_overlap=1000)
-    chunks = text_splitter.split_text(text)
-    return chunks
-
+    return text_splitter.split_text(text)
 
 def get_vector_store(text_chunks):
     if not text_chunks:
+        logger.warning("No text chunks to process")
         return
-
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-    vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
-
-    # Save the index and documents separately
-    faiss.write_index(vector_store.index, "faiss_index.bin")
-    with open("faiss_docs.pkl", "wb") as f:
-        pickle.dump(vector_store.docstore._dict, f)
+    try:
+        embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+        vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
+        vector_store.save_local("faiss_index")
+        logger.info("Vector store created and saved successfully")
+    except Exception as e:
+        logger.error(f"Error creating vector store: {str(e)}")
 
 def get_conversational_chain():
     prompt_template = """
@@ -113,33 +87,29 @@ def get_conversational_chain():
 
     Answer:
     """
-
     model = ChatGoogleGenerativeAI(model="gemini-pro", temperature=0.3)
     prompt = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
-    chain = load_qa_chain(model, chain_type="stuff", prompt=prompt)
-
-    return chain
+    return load_qa_chain(model, chain_type="stuff", prompt=prompt)
 
 def user_input(user_question):
-    new_db = load_vector_store()
-    if not new_db:
-        return "Vector store not available. Please regenerate the document index."
+    try:
+        new_db = load_vector_store()
+        if not new_db:
+            return "Vector store not available. Please regenerate the document index."
 
-    docs = new_db.similarity_search(user_question)
-
-    chain = get_conversational_chain()
-
-    response = chain(
-        {"input_documents": docs, "question": user_question},
-        return_only_outputs=True
-    )
-
-    return response["output_text"]
+        docs = new_db.similarity_search(user_question)
+        chain = get_conversational_chain()
+        response = chain(
+            {"input_documents": docs, "question": user_question},
+            return_only_outputs=True
+        )
+        return response["output_text"]
+    except Exception as e:
+        logger.error(f"Error processing user input: {str(e)}")
+        return "An error occurred while processing your question. Please try again."
 
 def setup_agent():
-    # Set up the base tools
     search = TavilySearchResults()
-
     tools = [
         Tool(
             name="Search",
@@ -152,16 +122,15 @@ def setup_agent():
             description="useful for when you need to answer questions about the documents that have been uploaded"
         )
     ]
-
-    # Set up the agent
     llm = ChatGoogleGenerativeAI(model="gemini-pro", temperature=0)
-    agent = initialize_agent(tools, llm, agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION, verbose=True)
-    
-    return agent
+    return initialize_agent(tools, llm, agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION, verbose=True)
 
 def process_question(agent, question):
-    response = agent.run(question)
-    return response
+    try:
+        return agent.run(question)
+    except Exception as e:
+        logger.error(f"Error processing question: {str(e)}")
+        return "An error occurred while processing your question. Please try again."
 
 def main():
     st.set_page_config("Chat PDF", layout="wide", page_icon=":robot:")
@@ -228,11 +197,12 @@ def main():
 
     process_button = st.button("Process Question", key="process_button")
 
-    if process_button:
-        if user_question_input:
-            raw_text = get_text(pdf_docs, other_docs)
-            text_chunks = get_text_chunks(raw_text)
-            get_vector_store(text_chunks)  # This now saves the index and docs separately
+    if process_button and user_question_input:
+        with st.spinner("Processing..."):
+            if pdf_docs or other_docs:
+                raw_text = get_text(pdf_docs, other_docs)
+                text_chunks = get_text_chunks(raw_text)
+                get_vector_store(text_chunks)
             
             user_response = process_question(st.session_state.agent, user_question_input)
             

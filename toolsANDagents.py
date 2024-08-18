@@ -38,6 +38,8 @@ from langchain.agents import initialize_agent, Tool
 from langchain.agents import AgentType
 # from langchain_community.tools import TavilySearchResults
 from langchain_community.tools.tavily_search import TavilySearchResults
+from langchain_community.vectorstores import FAISS
+import faiss
 
 
 load_dotenv()
@@ -63,6 +65,19 @@ def get_text_from_file(file):
     else:
         return " NONE "
 
+def load_vector_store():
+    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+    
+    if not os.path.exists("faiss_index.bin") or not os.path.exists("faiss_docs.pkl"):
+        return None
+
+    index = faiss.read_index("faiss_index.bin")
+    with open("faiss_docs.pkl", "rb") as f:
+        docstore = pickle.load(f)
+    
+    vector_store = FAISS(embeddings.embed_query, index, docstore, {})
+    return vector_store
+
 def get_text(pdf_docs, other_docs):
     text = ""
     for pdf in pdf_docs:
@@ -76,6 +91,7 @@ def get_text_chunks(text):
     chunks = text_splitter.split_text(text)
     return chunks
 
+
 def get_vector_store(text_chunks):
     if not text_chunks:
         return
@@ -83,8 +99,10 @@ def get_vector_store(text_chunks):
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
     vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
 
-    with open("faiss_index.pickle", "wb") as f:
-        pickle.dump(vector_store, f)
+    # Save the index and documents separately
+    faiss.write_index(vector_store.index, "faiss_index.bin")
+    with open("faiss_docs.pkl", "wb") as f:
+        pickle.dump(vector_store.docstore._dict, f)
 
 def get_conversational_chain():
     prompt_template = """
@@ -103,14 +121,7 @@ def get_conversational_chain():
     return chain
 
 def user_input(user_question):
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-
-    try:
-        with open("faiss_index.pickle", "rb") as f:
-            new_db = pickle.load(f)
-    except FileNotFoundError:
-        return "Vector store not available. Please regenerate the document index."
-
+    new_db = load_vector_store()
     if not new_db:
         return "Vector store not available. Please regenerate the document index."
 
@@ -221,7 +232,7 @@ def main():
         if user_question_input:
             raw_text = get_text(pdf_docs, other_docs)
             text_chunks = get_text_chunks(raw_text)
-            get_vector_store(text_chunks)
+            get_vector_store(text_chunks)  # This now saves the index and docs separately
             
             user_response = process_question(st.session_state.agent, user_question_input)
             

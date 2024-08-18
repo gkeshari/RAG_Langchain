@@ -184,35 +184,30 @@ def main():
     other_docs = st.sidebar.file_uploader("Upload Other Document Files (docx, txt)", accept_multiple_files=True)
 
     st.subheader("Conversation History")
-    if st.session_state.conversation_history:
-        chat_log = ""
-        for entry in st.session_state.conversation_history:
-            chat_log += f"<div class='stUserInput'>You : {entry['question']}</div><div class='stBotResponse'>Bot: {entry['response']}</div><br>"
-        st.markdown(chat_log, unsafe_allow_html=True)
-    else:
-        st.write("No conversation history yet. Start asking questions!")
+    for entry in st.session_state.conversation_history:
+        st.markdown(f"<div class='stUserInput'>You : {entry['question']}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='stBotResponse'>Bot: {entry['response']}</div>", unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
 
     st.subheader("Ask a Question")
     user_question_input = st.text_input("Your Question", key="user_question_input", placeholder="Enter your question here...")
 
-    process_button = st.button("Process Question", key="process_button")
-
-    if process_button and user_question_input:
-        with st.spinner("Processing..."):
-            if pdf_docs or other_docs:
-                raw_text = get_text(pdf_docs, other_docs)
-                text_chunks = get_text_chunks(raw_text)
-                get_vector_store(text_chunks)
-            
-            user_response = process_question(st.session_state.agent, user_question_input)
-            
-            st.session_state.conversation_history.append({"question": user_question_input, "response": user_response})
-            st.markdown(f'<div class="stBotResponse">Bot : {user_response}</div>', unsafe_allow_html=True)
-            st.experimental_rerun()
+    if st.button("Process Question", key="process_button"):
+        if user_question_input:
+            with st.spinner("Processing..."):
+                if pdf_docs or other_docs:
+                    raw_text = get_text(pdf_docs, other_docs)
+                    text_chunks = get_text_chunks(raw_text)
+                    get_vector_store(text_chunks)
+                
+                user_response = process_question(st.session_state.agent, user_question_input)
+                
+                st.session_state.conversation_history.append({"question": user_question_input, "response": user_response})
+                st.markdown(f'<div class="stBotResponse">Bot : {user_response}</div>', unsafe_allow_html=True)
 
     if st.button("Clear Conversation History", type="secondary", help="This will clear the conversation history."):
         st.session_state.conversation_history = []
-        st.experimental_rerun()
+        st.rerun()
 
 if __name__ == "__main__":
     main()

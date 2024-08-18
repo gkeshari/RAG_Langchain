@@ -87,7 +87,6 @@ def process_question(question):
     return document_answer
 
 def main():
-def main():
     st.set_page_config("Chat PDF", layout="wide", page_icon=":robot:")
     st.markdown(
         """

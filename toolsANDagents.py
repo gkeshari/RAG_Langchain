@@ -14,6 +14,7 @@ from langchain.agents import initialize_agent, Tool
 from langchain.agents import AgentType
 from langchain_community.tools.tavily_search import TavilySearchResults
 import logging
+import tempfile
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -27,16 +28,23 @@ tavily_api_key = os.getenv("TAVILY_API_KEY")
 
 def get_text_from_file(file):
     try:
+        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+            temp_file.write(file.getvalue())
+            temp_file_path = temp_file.name
+
         if file.name.endswith(".pdf"):
-            reader = PdfReader(file)
+            reader = PdfReader(temp_file_path)
             text = "".join(page.extract_text() for page in reader.pages)
         elif file.name.endswith(".docx"):
-            doc = docx.Document(file)
+            doc = docx.Document(temp_file_path)
             text = "\n".join(paragraph.text for paragraph in doc.paragraphs)
         elif file.name.endswith(".txt"):
-            text = file.getvalue().decode("utf-8")
+            with open(temp_file_path, 'r') as f:
+                text = f.read()
         else:
             return ""
+
+        os.unlink(temp_file_path)
         return text
     except Exception as e:
         logger.error(f"Error processing file {file.name}: {str(e)}")
@@ -75,8 +83,10 @@ def get_vector_store(text_chunks):
         vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
         vector_store.save_local("faiss_index")
         logger.info("Vector store created and saved successfully")
+        return vector_store
     except Exception as e:
         logger.error(f"Error creating vector store: {str(e)}")
+        return None
 
 def get_conversational_chain():
     prompt_template = """
@@ -95,7 +105,7 @@ def user_input(user_question):
     try:
         new_db = load_vector_store()
         if not new_db:
-            return "Vector store not available. Please regenerate the document index."
+            return "Vector store not available. Please upload and process documents first."
 
         docs = new_db.similarity_search(user_question)
         chain = get_conversational_chain()
@@ -179,15 +189,19 @@ def main():
     if 'agent' not in st.session_state:
         st.session_state.agent = setup_agent()
 
+    if 'vector_store' not in st.session_state:
+        st.session_state.vector_store = None
+
     st.sidebar.title("Upload Documents")
     pdf_docs = st.sidebar.file_uploader("Upload PDF Files", accept_multiple_files=True)
     other_docs = st.sidebar.file_uploader("Upload Other Document Files (docx, txt)", accept_multiple_files=True)
 
-    st.subheader("Conversation History")
-    for entry in st.session_state.conversation_history:
-        st.markdown(f"<div class='stUserInput'>You : {entry['question']}</div>", unsafe_allow_html=True)
-        st.markdown(f"<div class='stBotResponse'>Bot: {entry['response']}</div>", unsafe_allow_html=True)
-        st.markdown("<br>", unsafe_allow_html=True)
+    if st.sidebar.button("Process Documents"):
+        with st.spinner("Processing documents..."):
+            raw_text = get_text(pdf_docs, other_docs)
+            text_chunks = get_text_chunks(raw_text)
+            st.session_state.vector_store = get_vector_store(text_chunks)
+            st.sidebar.success("Documents processed successfully!")
 
     st.subheader("Ask a Question")
     user_question_input = st.text_input("Your Question", key="user_question_input", placeholder="Enter your question here...")
@@ -195,15 +209,17 @@ def main():
     if st.button("Process Question", key="process_button"):
         if user_question_input:
             with st.spinner("Processing..."):
-                if pdf_docs or other_docs:
-                    raw_text = get_text(pdf_docs, other_docs)
-                    text_chunks = get_text_chunks(raw_text)
-                    get_vector_store(text_chunks)
-                
-                user_response = process_question(st.session_state.agent, user_question_input)
-                
-                st.session_state.conversation_history.append({"question": user_question_input, "response": user_response})
-                st.markdown(f'<div class="stBotResponse">Bot : {user_response}</div>', unsafe_allow_html=True)
+                if st.session_state.vector_store is None:
+                    st.error("Please upload and process documents first.")
+                else:
+                    user_response = process_question(st.session_state.agent, user_question_input)
+                    st.session_state.conversation_history.append({"question": user_question_input, "response": user_response})
+
+    st.subheader("Conversation History")
+    for entry in reversed(st.session_state.conversation_history):
+        st.markdown(f"<div class='stUserInput'>You : {entry['question']}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='stBotResponse'>Bot: {entry['response']}</div>", unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
 
     if st.button("Clear Conversation History", type="secondary", help="This will clear the conversation history."):
         st.session_state.conversation_history = []

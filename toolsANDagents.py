@@ -26,53 +26,7 @@ os.getenv("GOOGLE_API_KEY")
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 tavily_api_key = os.getenv("TAVILY_API_KEY")
 
-def get_text_from_file(file):
-    try:
-        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-            temp_file.write(file.getvalue())
-            temp_file_path = temp_file.name
-
-        if file.name.endswith(".pdf"):
-            reader = PdfReader(temp_file_path)
-            text = "".join(page.extract_text() for page in reader.pages)
-        elif file.name.endswith(".docx"):
-            doc = docx.Document(temp_file_path)
-            text = "\n".join(paragraph.text for paragraph in doc.paragraphs)
-        elif file.name.endswith(".txt"):
-            with open(temp_file_path, 'r') as f:
-                text = f.read()
-        else:
-            return ""
-
-        os.unlink(temp_file_path)
-        return text
-    except Exception as e:
-        logger.error(f"Error processing file {file.name}: {str(e)}")
-        return ""
-
-def load_vector_store():
-    try:
-        embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-        if os.path.exists("faiss_index"):
-            vector_store = FAISS.load_local("faiss_index", embeddings)
-            logger.info("Vector store loaded successfully")
-            return vector_store
-        else:
-            logger.warning("Vector store not found")
-            return None
-    except Exception as e:
-        logger.error(f"Error loading vector store: {str(e)}")
-        return None
-
-def get_text(pdf_docs, other_docs):
-    text = ""
-    for file in pdf_docs + other_docs:
-        text += get_text_from_file(file)
-    return text
-
-def get_text_chunks(text):
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=10000, chunk_overlap=1000)
-    return text_splitter.split_text(text)
+# ... (keep all the previous functions like get_text_from_file, load_vector_store, get_text, get_text_chunks)
 
 def get_vector_store(text_chunks):
     if not text_chunks:
@@ -88,30 +42,17 @@ def get_vector_store(text_chunks):
         logger.error(f"Error creating vector store: {str(e)}")
         return None
 
-def get_conversational_chain():
-    prompt_template = """
-    Answer the question as detailed as possible from the provided context, make sure to provide all the details, if the answer is not in
-    provided context just say, "I don't have enough information to answer this question based on the provided context.", don't provide the wrong answer\n\n
-    Context:\n {context}?\n
-    Question: \n{question}\n
-
-    Answer:
-    """
-    model = ChatGoogleGenerativeAI(model="gemini-pro", temperature=0.3)
-    prompt = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
-    return load_qa_chain(model, chain_type="stuff", prompt=prompt)
-
 def user_input(user_question):
     try:
-        new_db = st.session_state.vector_store
+        new_db = st.session_state.get('vector_store')
         if new_db is None:
-            return "No documents have been processed. Please upload and process documents first."
+            return "I don't have enough information from documents to answer this question. Please try a web search or upload relevant documents."
 
-        docs = new_db.similarity_search(user_question, k=4)  # Increase k for more context
+        docs = new_db.similarity_search(user_question, k=4)
         context = "\n".join([doc.page_content for doc in docs])
         
         prompt = f"""
-        Use the following context to answer the question. If the answer is not in the context, say "I don't have enough information to answer this question based on the provided context."
+        Use the following context to answer the question. If the answer is not in the context, say "I don't have enough information from the documents to answer this question."
         
         Context:
         {context}
@@ -129,76 +70,29 @@ def user_input(user_question):
         logger.error(f"Error in user_input: {str(e)}")
         return "An error occurred while processing your question. Please try again."
 
-def setup_agent():
-    search = TavilySearchResults()
-    tools = [
-        Tool(
-            name="Document QA System",
-            func=user_input,
-            description="Always use this tool first for answering questions about the uploaded documents."
-        ),
-        Tool(
-            name="Search",
-            func=search.run,
-            description="Use this tool only if the Document QA System couldn't provide an answer."
-        )
-    ]
-    llm = ChatGoogleGenerativeAI(model="gemini-pro", temperature=0)
-    return initialize_agent(tools, llm, agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION, verbose=True)
-
-def process_question(agent, question):
+def web_search(query):
+    search = TavilySearchResults(api_key=tavily_api_key)
     try:
-        return agent.run(question)
+        results = search.run(query)
+        return results
     except Exception as e:
-        logger.error(f"Error processing question: {str(e)}")
-        return "An error occurred while processing your question. Please try again."
+        logger.error(f"Error in web search: {str(e)}")
+        return "An error occurred while performing the web search. Please try again."
+
+def process_question(question):
+    document_answer = user_input(question)
+    if "I don't have enough information" in document_answer:
+        web_answer = web_search(question)
+        return f"Document search didn't yield results. Web search found: {web_answer}"
+    return document_answer
 
 def main():
     st.set_page_config("Chat PDF", layout="wide", page_icon=":robot:")
-    st.markdown(
-        """
-        <style>
-        .stApp {
-            background-color: #f08080;
-            color: #333333;
-        }
-        .stHeader {
-            background-color: #007bff;
-            color: #ffffff;
-            padding: 10px;
-        }
-        .stSubheader {
-            font-weight: bold;
-            margin-top: 20px;
-            color: #007bff;
-        }
-        .stUserInput {
-            background-color: #e6e6e6;
-            padding: 10px;
-            border-radius: 5px;
-        }
-        .stBotResponse {
-            background-color: #eee8aa; 
-            padding: 10px;
-            border-radius: 5px;
-            color: #155724;
-        }
-        .stClearButton {
-            background-color: #dc3545;
-            color: #ffffff;
-            border-radius: 5px;
-            padding: 5px 10px;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True
-    )
+    
+    # ... (keep the CSS styling)
 
     if 'conversation_history' not in st.session_state:
         st.session_state.conversation_history = []
-
-    if 'agent' not in st.session_state:
-        st.session_state.agent = setup_agent()
 
     if 'vector_store' not in st.session_state:
         st.session_state.vector_store = None
@@ -223,11 +117,8 @@ def main():
     if st.button("Process Question", key="process_button"):
         if user_question_input:
             with st.spinner("Processing..."):
-                if st.session_state.vector_store is None:
-                    st.error("Please upload and process documents first.")
-                else:
-                    user_response = user_input(user_question_input)  # Direct call to user_input
-                    st.session_state.conversation_history.append({"question": user_question_input, "response": user_response})
+                user_response = process_question(user_question_input)
+                st.session_state.conversation_history.append({"question": user_question_input, "response": user_response})
 
     st.subheader("Conversation History")
     for entry in reversed(st.session_state.conversation_history):
